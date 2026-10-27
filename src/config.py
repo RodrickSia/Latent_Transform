@@ -6,6 +6,7 @@ VAE_MODEL = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 IMAGENET_DIR = Path(__file__).resolve().parents[1] / "data" / "imagenet_eval"
 IMAGE_INDEX = 0  # Select one image from the sorted dataset filenames.
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "outputs"
+LOG_INTERVAL = 10
 
 T = 150  # adversarial optimization steps
 K = 4  # sampled perturbations per EOT loss
