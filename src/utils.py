@@ -43,46 +43,40 @@ def depthwise_smoothing(
     )
 
 
-def apply_perturbation(image: torch.Tensor, size: int = 224) -> torch.Tensor:
-    """Uniformly choose one of three differentiable perturbations per call."""
+def apply_perturbation(
+    image: torch.Tensor, size: int = 224, max_scale: int = 64, jitter: int = 8
+) -> torch.Tensor:
+    """Sample one EOT transform and apply all of its stages to the image.
+
+    A single transform composes a random resize to ``[size, size + max_scale]``
+    using a randomly chosen interpolation kernel, followed by a near-center crop
+    back to ``size`` with up to ``jitter`` pixels of offset per axis. Every stage
+    runs on every call; only their parameters are resampled, so the output is
+    always ``size`` x ``size`` and remains differentiable w.r.t. the input.
+    """
     if image.ndim not in (3, 4):
         raise ValueError("Expected a CHW or NCHW image tensor.")
+    if size <= 0 or max_scale < 0 or jitter < 0:
+        raise ValueError("size must be positive; max_scale and jitter must be non-negative.")
     unbatched = image.ndim == 3
     batch = image.unsqueeze(0) if unbatched else image
 
-    perturbation = int(torch.randint(3, ()).item())
-    if perturbation == 0:
-        # Random resize: integer size sampled uniformly from [size, size + 64].
-        resize_size = int(torch.randint(size, size + 65, ()).item())
-        perturbed = nn.functional.interpolate(
-            batch,
-            size=(resize_size, resize_size),
-            mode="bilinear",
-            align_corners=False,
-        )
-    elif perturbation == 1:
-        # Random interpolation mode at a fixed target size.
-        modes = ("nearest", "bilinear", "bicubic")
-        mode = modes[int(torch.randint(len(modes), ()).item())]
-        perturbed = nn.functional.interpolate(
-            batch,
-            size=(size, size),
-            mode=mode,
-            align_corners=False if mode in ("bilinear", "bicubic") else None,
-        )
-    else:
-        # Crop near the center, jittering each axis by up to 8px.
-        height, width = batch.shape[-2:]
-        if height < size or width < size:
-            raise ValueError(f"Cropping requires height and width >= {size}.")
-        center_top = (height - size) // 2
-        center_left = (width - size) // 2
-        top = int(torch.randint(
-            max(0, center_top - 8), min(height - size, center_top + 8) + 1, ()
-        ).item())
-        left = int(torch.randint(
-            max(0, center_left - 8), min(width - size, center_left + 8) + 1, ()
-        ).item())
-        perturbed = batch[..., top:top + size, left:left + size]
+    resize_size = int(torch.randint(size, size + max_scale + 1, ()).item())
+    modes = ("nearest", "bilinear", "bicubic")
+    mode = modes[int(torch.randint(len(modes), ()).item())]
+    resized = nn.functional.interpolate(
+        batch,
+        size=(resize_size, resize_size),
+        mode=mode,
+        align_corners=False if mode in ("bilinear", "bicubic") else None,
+    )
+
+    # Jitter collapses to a single offset when resize_size == size.
+    center = (resize_size - size) // 2
+    low = max(0, center - jitter)
+    high = min(resize_size - size, center + jitter)
+    top = int(torch.randint(low, high + 1, ()).item())
+    left = int(torch.randint(low, high + 1, ()).item())
+    perturbed = resized[..., top:top + size, left:left + size]
 
     return perturbed.squeeze(0) if unbatched else perturbed
