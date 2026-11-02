@@ -24,3 +24,6 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 SMOOTH_KERNEL_SIZE = 3  # must be odd
 SMOOTH_SIGMA = 0.5
+
+OBJECTIVE = "margin"  # surrogate objective: "margin" (CW) or "ce" (paper)
+KAPPA = 0.0  # margin confidence; only used when OBJECTIVE == "margin"

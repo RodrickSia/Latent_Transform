@@ -14,7 +14,7 @@ from torchvision.transforms import Compose, Resize, ToTensor
 import config as cfg
 import main
 from generate_adversarial_image import generate_adversarial_image
-from loss import soft_penalty
+from loss import eot_loss, margin_loss, soft_penalty
 from utils import apply_perturbation
 
 
@@ -78,7 +78,7 @@ class ExperimentTests(unittest.TestCase):
             "Starting experiment", "class_id=2", "VAE ready",
             "dtype=torch.float32", "Step 1/3 (pre-update)",
             "Step 2/3 (pre-update)", "Step 3/3 (pre-update)",
-            "eot_ce=", "penalty=", "pixel_linf=",
+            f"eot_{cfg.OBJECTIVE}=", "penalty=", "pixel_linf=",
             "Applied latent smoothing after step 2", "Saved adversarial image",
             "Target results", "Experiment completed",
         ):
@@ -212,6 +212,53 @@ class EotTransformTests(unittest.TestCase):
         assert decoded.grad is not None
         self.assertLess(decoded.grad[0].item(), 0)
         self.assertGreater(decoded.grad[2].item(), 0)
+
+
+class MarginLossTests(unittest.TestCase):
+    def test_negated_cw_margin_is_maximized_and_capped_by_kappa(self):
+        # Class 1 is correct and leads by 3 logits, so the margin is negative.
+        logits = torch.tensor([[1.0, 5.0, 2.0]])
+        label = torch.tensor([1])
+        self.assertAlmostEqual(margin_loss(logits, label, 0.0).item(), -3.0, places=5)
+
+        # Once a competitor leads by more than kappa the objective saturates.
+        beaten = torch.tensor([[1.0, 2.0, 9.0]])
+        self.assertAlmostEqual(margin_loss(beaten, label, 2.0).item(), 2.0, places=5)
+        self.assertAlmostEqual(margin_loss(beaten, label, 0.0).item(), 0.0, places=5)
+
+    def test_gradient_pushes_true_logit_down_and_runner_up_up(self):
+        logits = torch.tensor([[1.0, 5.0, 2.0]], requires_grad=True)
+        # The caller maximizes, so it descends the negation.
+        (-margin_loss(logits, torch.tensor([1]), 0.0)).backward()
+        assert logits.grad is not None
+        self.assertGreater(logits.grad[0, 1].item(), 0)  # suppress true class
+        self.assertLess(logits.grad[0, 2].item(), 0)  # promote best competitor
+        self.assertEqual(logits.grad[0, 0].item(), 0)  # ignore the rest
+
+    def test_eot_loss_dispatches_and_validates_objective(self):
+        model = nn.Sequential(nn.Flatten(), nn.Linear(3 * 224 * 224, 4))
+        image = torch.rand(1, 3, 256, 256)
+        label = torch.tensor([2])
+        args = (image, label, model, 2, 224, cfg.IMAGENET_MEAN, cfg.IMAGENET_STD)
+
+        torch.manual_seed(0)
+        margin = eot_loss(*args, "margin", 0.0)
+        torch.manual_seed(0)
+        cross_entropy = eot_loss(*args, "ce")
+        self.assertNotAlmostEqual(margin.item(), cross_entropy.item())
+        self.assertLessEqual(margin.item(), 0.0)  # kappa=0 caps the objective
+        self.assertGreater(cross_entropy.item(), 0.0)
+
+        with self.assertRaises(ValueError):
+            eot_loss(*args, "hinge")
+
+    def test_margin_rejects_invalid_inputs(self):
+        with self.assertRaises(ValueError):
+            margin_loss(torch.rand(3), torch.tensor([0]))
+        with self.assertRaises(ValueError):
+            margin_loss(torch.rand(1, 1), torch.tensor([0]))
+        with self.assertRaises(ValueError):
+            margin_loss(torch.rand(1, 3), torch.tensor([0]), kappa=-1.0)
 
 
 class SingleImageTests(unittest.TestCase):

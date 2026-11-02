@@ -34,9 +34,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=cfg.IMAGENET_DIR)
     parser.add_argument("--output-dir", type=Path, default=cfg.OUTPUT_DIR)
     parser.add_argument("--device", default=cfg.DEVICE)
+    parser.add_argument(
+        "--objective", choices=("margin", "ce"), default=cfg.OBJECTIVE,
+        help="Surrogate objective: untargeted CW margin (default) or cross-entropy (paper).",
+    )
+    parser.add_argument(
+        "--kappa", type=float, default=cfg.KAPPA,
+        help="Margin confidence in logits; ignored unless --objective margin.",
+    )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
+    if args.kappa < 0:
+        parser.error("--kappa must be non-negative")
     return args
 
 
@@ -133,7 +143,8 @@ def run_experiment(args: argparse.Namespace, run_dir: Path) -> None:
         "smoothing_interval": cfg.N, "kernel_size": cfg.SMOOTH_KERNEL_SIZE,
         "sigma": cfg.SMOOTH_SIGMA, "width": cfg.W, "height": cfg.H,
         "crop_size": cfg.CROP_SIZE, "mean": cfg.IMAGENET_MEAN,
-        "std": cfg.IMAGENET_STD, "log_interval": cfg.LOG_INTERVAL,
+        "std": cfg.IMAGENET_STD, "objective": args.objective,
+        "kappa": args.kappa, "log_interval": cfg.LOG_INTERVAL,
     }
     manifest = {
         "status": "running", "surrogate": args.surrogate, "targets": targets,

@@ -31,6 +31,8 @@ class AttackSettings(TypedDict):
     crop_size: int
     mean: Sequence[float]
     std: Sequence[float]
+    objective: str
+    kappa: float
     log_interval: int
 
 
@@ -53,6 +55,8 @@ def generate_adversarial_image(
     crop_size: int,
     mean: Sequence[float],
     std: Sequence[float],
+    objective: str = "margin",
+    kappa: float = 0.0,
     log_interval: int,
 ) -> Image.Image:
     """Attack one PIL image and return its final RGB image.
@@ -90,7 +94,8 @@ def generate_adversarial_image(
         # soft penalty, not a clamp, is what keeps pixels inside [0, 1].
         adversarial = decoded.float() / 2 + 0.5
         classification_loss = eot_loss(
-            adversarial, target, surrogate_model, k, crop_size, mean, std
+            adversarial, target, surrogate_model, k, crop_size, mean, std,
+            objective, kappa,
         )
         penalty = soft_penalty(adversarial, original, epsilon)
         loss = -classification_loss + penalty_weight * penalty
@@ -102,9 +107,10 @@ def generate_adversarial_image(
                 loss=f"{loss.item():.4f}", penalty=f"{penalty.item():.4f}"
             )
             logger.info(
-                "Step %d/%d (pre-update) | loss=%.6f | eot_ce=%.6f | "
+                "Step %d/%d (pre-update) | loss=%.6f | eot_%s=%.6f | "
                 "penalty=%.6f | pixel_linf=%.6f | elapsed=%.1fs",
-                step, steps, loss.item(), classification_loss.item(), penalty.item(),
+                step, steps, loss.item(), objective, classification_loss.item(),
+                penalty.item(),
                 (adversarial.detach() - original).abs().max().item(),
                 time.perf_counter() - started,
             )
