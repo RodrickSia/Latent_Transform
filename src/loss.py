@@ -72,22 +72,24 @@ def soft_penalty(
     epsilon: float,
     norm: str = "l2",
 ) -> torch.Tensor:
-    """Mean per-pixel violation of the epsilon budget.
+    """Norm of the per-pixel budget violation ``e = relu(|d| - epsilon)``.
 
-    ``"l1"`` averages the hinge ``relu(|d| - epsilon)`` exactly as the paper
-    writes it. Its gradient is a constant sign, so one pixel violating by
-    0.5 is pushed back no harder than one violating by 0.02, which lets a few
-    outliers survive the whole optimization. ``"l2"`` averages the squared
-    hinge instead: the gradient scales with the violation, so large outliers
-    are pulled back hardest, and the kink at the threshold becomes smooth.
+    Epsilon is a per-pixel budget in both modes, exactly as the paper intends;
+    only the aggregation over pixels differs.
 
-    Note that squaring shrinks the term's magnitude (a 0.05 violation becomes
-    0.0025), so an L2 run needs a larger ``penalty_weight`` than an L1 run to
-    apply comparable pressure.
+    ``"l1"`` returns ``mean(e)``, the paper's form. Every violating pixel
+    contributes a constant-magnitude gradient, so a pixel over budget by 0.5 is
+    pushed back no harder than one over by 0.02 and isolated spikes survive.
+
+    ``"l2"`` returns ``||e||_2 = sqrt(sum(e**2))``. Each pixel's gradient now
+    scales with its own violation, so the worst offenders dominate. Note the
+    two are not on the same scale: the L2 form is roughly ``sqrt(N)`` times
+    larger than the L1 mean, so ``penalty_weight`` must be retuned when
+    switching.
     """
     if norm not in ("l1", "l2"):
         raise ValueError(f"Unsupported penalty norm: {norm!r}")
     excess = nn.functional.relu(torch.abs(adversarial_image - original_image) - epsilon)
-    if norm == "l2":
-        excess = excess.square()
-    return excess.sum() / adversarial_image.numel()
+    if norm == "l1":
+        return excess.sum() / adversarial_image.numel()
+    return torch.sqrt(excess.square().sum() + 1e-12) # Adding this to prevent gradient exploding at zero

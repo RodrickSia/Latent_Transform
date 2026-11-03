@@ -48,7 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--label", action="append", dest="labels", help="One per run.")
     parser.add_argument("--samples", type=int, default=5, help="Shared images to render.")
     parser.add_argument(
-        "--cases", type=int, default=4, help="Samples per agreement category.",
+        "--cases", type=int, default=10, help="Samples per agreement category.",
     )
     parser.add_argument(
         "--case-target",
@@ -71,15 +71,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def auto_label(manifest: dict, run_dir: Path) -> str:
-    settings = manifest["settings"]
-    objective = settings.get("objective", "ce")
-    parts = [manifest["surrogate"], objective]
-    if objective == "margin":
-        parts.append(f"k={settings.get('kappa', 0.0):g}")
-    parts.append(settings.get("penalty_norm", "l1"))
-    parts.append(f"n={len(manifest.get('images', []))}")
-    return f"{' '.join(parts)}\n{run_dir.name[:15]}"
+def auto_labels(runs: list[dict]) -> list[str]:
+    """Name each run by whatever actually differs between the runs compared.
+
+    Spelling out every setting makes legends unreadable, so shared values are
+    dropped: comparing one CE run against one margin run yields "ce" and
+    "margin k0" rather than repeating the surrogate, lambda and image count on
+    both. Timestamps are appended only if the short names would collide.
+    """
+    def describe(run: dict) -> dict[str, str]:
+        settings = run["settings"]
+        objective = settings.get("objective", "ce")
+        kappa = settings.get("kappa")
+        return {
+            "surrogate": run["manifest"]["surrogate"],
+            "objective": objective,
+            "kappa": f"k{kappa:g}" if objective == "margin" and kappa is not None else "",
+            "penalty": settings.get("penalty_norm", "l1"),
+            "lambda": f"lam{settings['penalty_weight']:g}",
+            "lr": f"lr{settings['learning_rate']:g}",
+            "steps": f"T{settings['steps']}",
+            "images": f"n{len(run['manifest'].get('images', []))}",
+        }
+
+    described = [describe(run) for run in runs]
+    varying = [key for key in described[0] if len({d[key] for d in described}) > 1]
+    labels = [" ".join(filter(None, (d[key] for key in varying))) for d in described]
+    if len(set(labels)) < len(labels):
+        labels = [
+            f"{label} {run['run_dir'].name[:13]}".strip()
+            for label, run in zip(labels, runs)
+        ]
+    return labels
 
 
 def collect(run_dir: Path) -> dict:
@@ -150,7 +173,7 @@ def describe_key(key: tuple[bool, ...], labels: list[str]) -> str:
         return "Both succeed" if len(key) == 2 else "All runs succeed"
     if not any(key):
         return "Both fail" if len(key) == 2 else "All runs fail"
-    short = [label.splitlines()[0] for label in labels]
+    short = list(labels)
     won = " + ".join(name for name, flipped in zip(short, key) if flipped)
     lost = " + ".join(name for name, flipped in zip(short, key) if not flipped)
     return f"{won} succeeds  /  {lost} fails"
@@ -202,15 +225,15 @@ def draw_quality(figure, runs: list[dict], labels: list[str]) -> None:
     grid = figure.add_gridspec(2, 1, height_ratios=(1, 1.1), hspace=0.35)
     text_axis = figure.add_subplot(grid[0])
     text_axis.axis("off")
-    header = f"{'run':<34}{'obj':>7}{'kappa':>7}{'pen':>5}{'lam':>6}{'n':>6}"
-    header += f"{'PSNR':>8}{'L1':>7}{'L2':>7}{'Linf':>7}"
+    header = f"{'run':<24}{'obj':>7}{'kappa':>7}{'pen':>5}{'lam':>6}{'n':>6}"
+    header += f"{'PSNR':>8}{'L1':>7}{'L2':>7}{'Linf':>7}   directory"
     lines = [header, "-" * len(header)]
     for run, label in zip(runs, labels):
         settings, metrics = run["settings"], run["metrics"]
         lines.append(
-            f"{label.replace(chr(10), ' ')[:33]:<34}"
+            f"{label[:23]:<24}"
             f"{settings.get('objective', 'ce'):>7}"
-            f"{settings.get('kappa', 0.0):>7.1f}"
+            f"{settings.get('kappa') or 0.0:>7.1f}"
             f"{settings.get('penalty_norm', 'l1'):>5}"
             f"{settings['penalty_weight']:>6.1f}"
             f"{metrics['images']:>6d}"
@@ -218,6 +241,7 @@ def draw_quality(figure, runs: list[dict], labels: list[str]) -> None:
             f"{metrics['l1_mean_abs_error_255']:>7.2f}"
             f"{metrics['l2_rmse_255']:>7.2f}"
             f"{metrics['linf_255']:>7.1f}"
+            f"   {run['run_dir'].name}"
         )
     lines += ["", f"paper reference PSNR {PAPER_PSNR_DB} dB;  "
                   f"epsilon {cfg.EPSILON * 255:.0f}/255 (L1/L2 in /255 units)"]
@@ -237,7 +261,7 @@ def draw_quality(figure, runs: list[dict], labels: list[str]) -> None:
                 f"{value:.2f}", (position, value), ha="center", va="bottom", fontsize=7
             )
         axis.set_xticks(positions)
-        axis.set_xticklabels([f"run {index + 1}" for index in positions], fontsize=7)
+        axis.set_xticklabels(labels, fontsize=7, rotation=15, ha="right")
         axis.set_title(title, fontsize=8)
         axis.grid(axis="y", alpha=0.3)
 
@@ -280,7 +304,7 @@ def draw_asr(figure, runs: list[dict], labels: list[str]) -> None:
     axis.grid(axis="y", alpha=0.3)
     axis.legend(fontsize=7, ncol=min(len(series), 4))
     means = ", ".join(
-        f"{label.splitlines()[0]} {np.nanmean([run['results'].get(n, {}).get('asr_pct', np.nan) for n in targets]):.1f}"
+        f"{label} {np.nanmean([run['results'].get(n, {}).get('asr_pct', np.nan) for n in targets]):.1f}"
         for label, run in zip(labels, runs)
     )
     axis.set_title(f"Transfer ASR by target   mean: {means}", loc="left", fontsize=11)
@@ -299,7 +323,7 @@ def draw_mean_comparison(figure, runs: list[dict], labels: list[str]) -> None:
                 continue
             axis.plot(
                 stats["step"], stats["mean"], linewidth=1.8, color=f"C{index}",
-                label=f"{label.splitlines()[0]} ({metric})",
+                label=f"{label} ({metric})",
             )
             axis.fill_between(
                 stats["step"], stats["mean"] - stats["std"],
@@ -343,9 +367,7 @@ def build(
     from matplotlib.backends.backend_pdf import PdfPages
 
     runs = [collect(run_dir) for run_dir in args.run_dirs]
-    labels = args.labels or [
-        auto_label(run["manifest"], run["run_dir"]) for run in runs
-    ]
+    labels = args.labels or auto_labels(runs)
     shared = sorted(set.intersection(*(set(run["images"]) for run in runs)))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -388,7 +410,7 @@ def build(
             title = describe_key(key, labels)
             counts[title] = len(groups[key])
             figure = plt.figure(
-                figsize=(2.9 * (len(runs) + 1) + 1, 2.9 * len(entries) + 1.1)
+                figsize=(2.9 * (len(runs) + 1) + 1, 2.5 * len(entries) + 1.1)
             )
             draw_case_grid(
                 figure, entries, runs, labels, categories, target, title,
@@ -411,7 +433,7 @@ def main(argv: list[str] | None = None) -> None:
         ]
         summary = f"mean ASR {np.mean(asr):.1f}" if asr else "no results.json"
         print(
-            f"{label.splitlines()[0]:<30} n={metrics['images']:<5} "
+            f"{label:<24} n={metrics['images']:<5} "
             f"PSNR {metrics['psnr_db']:6.2f} dB  "
             f"L1 {metrics['l1_mean_abs_error_255']:5.2f}  "
             f"L2 {metrics['l2_rmse_255']:5.2f}  "
