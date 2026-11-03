@@ -6,7 +6,10 @@ from torch import Tensor, nn
 from torchvision.models import get_model, get_model_weights
 
 
-SURROGATES = ("resnet50", "resnet152", "vgg16")
+SURROGATES = (
+    "resnet50", "resnet152", "vgg16", "mobilenet_v2", "inception_v3",
+    "vit_b_16", "pit_b", "visformer_small", "swin_t",
+)
 TARGETS = (
     "resnet50", "resnet152", "vgg16", "mobilenet_v2", "inception_v3",
     "vit_b_16", "pit_b", "visformer_small", "swin_t",
