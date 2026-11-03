@@ -89,7 +89,8 @@ def soft_penalty(
     """
     if norm not in ("l1", "l2"):
         raise ValueError(f"Unsupported penalty norm: {norm!r}")
-    excess = nn.functional.relu(torch.abs(adversarial_image - original_image) - epsilon)
+    
     if norm == "l1":
-        return excess.sum() / adversarial_image.numel()
-    return torch.sqrt(excess.square().sum() + 1e-12) # Adding this to prevent gradient exploding at zero
+        return torch.abs(adversarial_image - original_image).sum() / adversarial_image.numel()
+
+    return torch.sqrt(torch.square(adversarial_image - original_image).sum() + 1e-12)  # Adding this to prevent gradient exploding at zero
