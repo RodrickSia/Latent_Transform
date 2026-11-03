@@ -42,6 +42,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--kappa", type=float, default=cfg.KAPPA,
         help="Margin confidence in logits; ignored unless --objective margin.",
     )
+    parser.add_argument(
+        "--penalty-norm", choices=("l2", "l1"), default=cfg.PENALTY_NORM,
+        help="Soft penalty hinge: squared (default) or absolute (paper).",
+    )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
@@ -144,7 +148,8 @@ def run_experiment(args: argparse.Namespace, run_dir: Path) -> None:
         "sigma": cfg.SMOOTH_SIGMA, "width": cfg.W, "height": cfg.H,
         "crop_size": cfg.CROP_SIZE, "mean": cfg.IMAGENET_MEAN,
         "std": cfg.IMAGENET_STD, "objective": args.objective,
-        "kappa": args.kappa, "log_interval": cfg.LOG_INTERVAL,
+        "kappa": args.kappa, "penalty_norm": args.penalty_norm,
+        "log_interval": cfg.LOG_INTERVAL,
     }
     manifest = {
         "status": "running", "surrogate": args.surrogate, "targets": targets,

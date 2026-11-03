@@ -27,3 +27,4 @@ SMOOTH_SIGMA = 0.5
 
 OBJECTIVE = "margin"  # surrogate objective: "margin" (CW) or "ce" (paper)
 KAPPA = 0.0  # margin confidence; only used when OBJECTIVE == "margin"
+PENALTY_NORM = "l2"  # soft penalty hinge: "l2" (squared) or "l1" (paper)

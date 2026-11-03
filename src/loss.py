@@ -66,10 +66,28 @@ def eot_loss(
         )
     return total / k
 
-# Change to L2 ? for smoother. 
 def soft_penalty(
-    adversarial_image: torch.Tensor, original_image: torch.Tensor, epsilon: float
+    adversarial_image: torch.Tensor,
+    original_image: torch.Tensor,
+    epsilon: float,
+    norm: str = "l2",
 ) -> torch.Tensor:
-    """Mean per-pixel amount by which |adv - orig| exceeds epsilon."""
-    excess = torch.abs(adversarial_image - original_image) - epsilon
-    return nn.functional.relu(excess).sum() / adversarial_image.numel()
+    """Mean per-pixel violation of the epsilon budget.
+
+    ``"l1"`` averages the hinge ``relu(|d| - epsilon)`` exactly as the paper
+    writes it. Its gradient is a constant sign, so one pixel violating by
+    0.5 is pushed back no harder than one violating by 0.02, which lets a few
+    outliers survive the whole optimization. ``"l2"`` averages the squared
+    hinge instead: the gradient scales with the violation, so large outliers
+    are pulled back hardest, and the kink at the threshold becomes smooth.
+
+    Note that squaring shrinks the term's magnitude (a 0.05 violation becomes
+    0.0025), so an L2 run needs a larger ``penalty_weight`` than an L1 run to
+    apply comparable pressure.
+    """
+    if norm not in ("l1", "l2"):
+        raise ValueError(f"Unsupported penalty norm: {norm!r}")
+    excess = nn.functional.relu(torch.abs(adversarial_image - original_image) - epsilon)
+    if norm == "l2":
+        excess = excess.square()
+    return excess.sum() / adversarial_image.numel()

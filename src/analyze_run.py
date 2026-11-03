@@ -42,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, help="Defaults to the most recent run.")
     parser.add_argument("--images", type=int, default=6, help="Images per trace plot.")
+    parser.add_argument("--gallery", type=int, default=6, help="Images in the sample gallery.")
     parser.add_argument("--cases", type=int, default=4, help="Success/failure examples.")
     parser.add_argument(
         "--case-target", help="Target whose predictions pick the cases. Default: a "
@@ -49,8 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, default=cfg.OUTPUT_DIR)
     args = parser.parse_args(argv)
-    if args.images <= 0 or args.cases <= 0:
-        parser.error("--images and --cases must be positive")
+    if min(args.images, args.cases, args.gallery) <= 0:
+        parser.error("--images, --gallery and --cases must be positive")
     return args
 
 
@@ -87,6 +88,106 @@ def parse_log(log_path: Path) -> tuple[dict[str, dict[str, list[float]]], str]:
                 objective = name
             current.setdefault(name, []).append(float(value))
     return traces, objective
+
+
+def aggregate_traces(
+    traces: dict[str, dict[str, list[float]]]
+) -> dict[str, dict[str, np.ndarray]]:
+    """Pool every image's curve into a per-step mean, std and quartile band.
+
+    Images are bucketed by step value rather than by position, so runs that
+    stopped early still contribute to the steps they reached; ``count`` records
+    how many images back each point.
+    """
+    pooled: dict[str, dict[float, list[float]]] = {}
+    for trace in traces.values():
+        steps = trace.get("step", [])
+        for metric, values in trace.items():
+            if metric == "step":
+                continue
+            buckets = pooled.setdefault(metric, {})
+            for step, value in zip(steps, values):
+                if np.isfinite(value):
+                    buckets.setdefault(step, []).append(value)
+
+    summary: dict[str, dict[str, np.ndarray]] = {}
+    for metric, buckets in pooled.items():
+        steps = sorted(buckets)
+        columns = [np.asarray(buckets[step]) for step in steps]
+        summary[metric] = {
+            "step": np.asarray(steps),
+            "mean": np.asarray([column.mean() for column in columns]),
+            "std": np.asarray([column.std() for column in columns]),
+            "p25": np.asarray([np.percentile(column, 25) for column in columns]),
+            "p75": np.asarray([np.percentile(column, 75) for column in columns]),
+            "count": np.asarray([column.size for column in columns]),
+        }
+    return summary
+
+
+def panel_spec(objective: str) -> list[tuple[str, str]]:
+    return [
+        ("loss", "Total loss  (-objective + lambda * penalty)"),
+        (objective, f"Surrogate objective  ({objective})"),
+        ("penalty", "Soft pixel penalty"),
+        ("pixel_linf", "Pixel Linf vs clean"),
+    ]
+
+
+def draw_mean_traces(figure, summary: dict, objective: str, total: int) -> None:
+    axes = figure.subplots(2, 2)
+    for axis, (metric, title) in zip(axes.flat, panel_spec(objective)):
+        stats = summary.get(metric)
+        if stats is None:
+            axis.set_title(f"{title}  (not logged)", fontsize=10)
+            continue
+        step = stats["step"]
+        axis.fill_between(
+            step, stats["p25"], stats["p75"], alpha=0.2, label="interquartile"
+        )
+        axis.fill_between(
+            step, stats["mean"] - stats["std"], stats["mean"] + stats["std"],
+            alpha=0.2, label="mean +/- 1 std",
+        )
+        axis.plot(step, stats["mean"], linewidth=2, color="C3", label="mean")
+        axis.set_title(title, fontsize=10)
+        axis.set_xlabel("optimization step")
+        axis.grid(alpha=0.3)
+        if stats["count"].min() < total:
+            axis.annotate(
+                f"min {stats['count'].min()} of {total} images at some steps",
+                (0.02, 0.02), xycoords="axes fraction", fontsize=7, color="0.4",
+            )
+    axes.flat[3].axhline(cfg.EPSILON, color="k", linestyle="--", linewidth=1)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", ncol=3, fontsize=8)
+    figure.suptitle(f"Loss progression averaged over all {total} images")
+
+
+def draw_gallery(
+    figure, names: list[str], run_dir: Path, dataset: Path,
+    size: tuple[int, int], rows_per_image: int = 3,
+) -> None:
+    """Clean / adversarial / amplified-difference columns, one per image."""
+    axes = figure.subplots(rows_per_image, len(names), squeeze=False)
+    for axis in axes.flat:
+        axis.set_xticks([])
+        axis.set_yticks([])
+    for column, name in enumerate(names):
+        clean, adversarial = load_pair(run_dir, dataset, name, size)
+        difference = np.abs(adversarial - clean)
+        peak = float(difference.max()) or 1.0
+        panels = (
+            (clean, "clean"),
+            (adversarial, "adversarial"),
+            (difference / peak, f"|diff| x{1 / peak:.1f}"),
+        )
+        for row, (image, label) in enumerate(panels):
+            axes[row][column].imshow(np.clip(image, 0, 1))
+            if column == 0:
+                axes[row][column].set_ylabel(label, fontsize=9)
+        axes[0][column].set_title(Path(name).stem[:18], fontsize=7)
+    figure.suptitle(f"Adversarial samples side by side ({len(names)} images)")
 
 
 def load_pair(run_dir: Path, dataset: Path, name: str, size: tuple[int, int]):
@@ -156,6 +257,7 @@ def draw_overview(figure, manifest: dict, metrics: dict, results: dict) -> None:
         f"      kappa {settings.get('kappa', 0.0)}      images {metrics['images']}",
         f"steps {settings['steps']}   K {settings['k']}   "
         f"lambda {settings['penalty_weight']}   lr {settings['learning_rate']}   "
+        f"penalty {settings.get('penalty_norm', 'l1')}   "
         f"smoothing every {settings['smoothing_interval']} "
         f"({settings['kernel_size']}x{settings['kernel_size']}, sigma {settings['sigma']})",
         "",
@@ -206,12 +308,7 @@ def draw_overview(figure, manifest: dict, metrics: dict, results: dict) -> None:
 
 
 def draw_traces(figure, traces: dict, objective: str, limit: int) -> None:
-    panels = [
-        ("loss", "Total loss  (-objective + lambda * penalty)"),
-        (objective, f"Surrogate objective  ({objective})"),
-        ("penalty", "Soft pixel penalty"),
-        ("pixel_linf", "Pixel Linf vs clean"),
-    ]
+    panels = panel_spec(objective)
     selected = list(traces.items())[:limit]
     axes = figure.subplots(2, 2)
     for axis, (metric, title) in zip(axes.flat, panels):
@@ -300,6 +397,25 @@ def build_report(args: argparse.Namespace, run_dir: Path) -> tuple[Path, dict]:
         trace_figure.tight_layout(rect=(0, 0.06, 1, 0.96))
         pdf.savefig(trace_figure)
         plt.close(trace_figure)
+
+        mean_figure = plt.figure(figsize=(13, 8))
+        draw_mean_traces(
+            mean_figure, aggregate_traces(traces), objective, len(traces)
+        )
+        mean_figure.tight_layout(rect=(0, 0.06, 1, 0.96))
+        pdf.savefig(mean_figure)
+        plt.close(mean_figure)
+
+        gallery = sorted(traces)[: args.gallery] or [
+            f"{path.stem.removesuffix('_adversarial')}.png"
+            for path in sorted((run_dir / "images").glob("*_adversarial.png"))
+        ][: args.gallery]
+        if gallery:
+            figure = plt.figure(figsize=(2.2 * len(gallery) + 1, 7.2))
+            draw_gallery(figure, gallery, run_dir, dataset, size)
+            figure.tight_layout(rect=(0, 0, 1, 0.95))
+            pdf.savefig(figure)
+            plt.close(figure)
 
         for kind, rows in (("Success", successes), ("Failure", failures)):
             selected = rows[: args.cases]

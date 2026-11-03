@@ -33,6 +33,7 @@ class AttackSettings(TypedDict):
     std: Sequence[float]
     objective: str
     kappa: float
+    penalty_norm: str
     log_interval: int
 
 
@@ -57,6 +58,7 @@ def generate_adversarial_image(
     std: Sequence[float],
     objective: str = "margin",
     kappa: float = 0.0,
+    penalty_norm: str = "l2",
     log_interval: int,
 ) -> Image.Image:
     """Attack one PIL image and return its final RGB image.
@@ -97,7 +99,7 @@ def generate_adversarial_image(
             adversarial, target, surrogate_model, k, crop_size, mean, std,
             objective, kappa,
         )
-        penalty = soft_penalty(adversarial, original, epsilon)
+        penalty = soft_penalty(adversarial, original, epsilon, penalty_norm)
         loss = -classification_loss + penalty_weight * penalty
         if not torch.isfinite(loss).item():
             logger.error("Non-finite loss at step %d/%d", step, steps)
