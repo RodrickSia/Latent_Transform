@@ -4,7 +4,6 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -30,6 +29,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--transfer-model", choices=(*TARGETS, "all"), required=True,
         help="Evaluate one paper target or all nine (including the surrogate).",
     )
+    parser.add_argument(
+        "--run-name", required=True,
+        help="Name of this run; used as the run directory name under <output-dir>/<surrogate>/.",
+    )
     parser.add_argument("--limit", type=int, help="Process only the first N sorted images.")
     parser.add_argument("--data-dir", type=Path, default=cfg.IMAGENET_DIR)
     parser.add_argument("--output-dir", type=Path, default=cfg.OUTPUT_DIR)
@@ -43,12 +46,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Margin confidence in logits; ignored unless --objective margin.",
     )
     parser.add_argument(
-        "--penalty-norm", choices=("l2", "l1"), default=cfg.PENALTY_NORM,
-        help="Soft penalty hinge: squared (default) or absolute (paper).",
+        "--penalty-norm", choices=("l2", "l1", "none"), default=cfg.PENALTY_NORM,
+        help="Soft penalty: L2 (default), L1 (paper), or none (no penalty).",
+    )
+    parser.add_argument(
+        "--latent-mode", action="store_true",
+        help="Compute the soft penalty between the adversarial and original latent vectors instead of images.",
     )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
+    if (
+        not args.run_name.strip()
+        or args.run_name in {".", ".."}
+        or "/" in args.run_name
+        or "\\" in args.run_name
+    ):
+        parser.error("--run-name must be a non-empty name without path separators")
     if args.kappa < 0:
         parser.error("--kappa must be non-negative")
     return args
@@ -149,10 +163,11 @@ def run_experiment(args: argparse.Namespace, run_dir: Path) -> None:
         "crop_size": cfg.CROP_SIZE, "mean": cfg.IMAGENET_MEAN,
         "std": cfg.IMAGENET_STD, "objective": args.objective,
         "kappa": args.kappa, "penalty_norm": args.penalty_norm,
+        "latent_mode": args.latent_mode,
         "log_interval": cfg.LOG_INTERVAL,
     }
     manifest = {
-        "status": "running", "surrogate": args.surrogate, "targets": targets,
+        "status": "running", "run_name": args.run_name, "surrogate": args.surrogate, "targets": targets,
         "seed": cfg.SEED, "device": args.device, "vae": cfg.VAE_MODEL,
         "vae_dtype": "float16", "latent_dtype": "float32",
         "settings": settings, "dataset": str(args.data_dir.resolve()),
@@ -217,7 +232,7 @@ def run_experiment(args: argparse.Namespace, run_dir: Path) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    run_dir = args.output_dir / args.surrogate / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_dir = args.output_dir / args.surrogate / args.run_name
     run_dir.mkdir(parents=True, exist_ok=False)
     handlers = [logging.StreamHandler(), logging.FileHandler(run_dir / "run.log", encoding="utf-8")]
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")

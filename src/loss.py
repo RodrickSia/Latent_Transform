@@ -67,30 +67,43 @@ def eot_loss(
     return total / k
 
 def soft_penalty(
-    adversarial_image: torch.Tensor,
-    original_image: torch.Tensor,
-    epsilon: float,
+    adversarial_image: torch.Tensor | None = None,
+    original_image: torch.Tensor | None = None,
+    epsilon: float = 0.0,
+    latent_mode: bool = False,
     norm: str = "l2",
+    adversarial_latent_vector: torch.Tensor | None = None,
+    original_latent_vector: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Norm of the per-pixel budget violation ``e = relu(|d| - epsilon)``.
+    """Penalty on the difference between adversarial and original inputs.
 
-    Epsilon is a per-pixel budget in both modes, exactly as the paper intends;
-    only the aggregation over pixels differs.
+    Pixel mode (default) compares ``adversarial_image`` and ``original_image``.
+    With ``latent_mode=True`` it compares ``adversarial_latent_vector`` and
+    ``original_latent_vector`` instead; the image arguments are ignored.
 
-    ``"l1"`` returns ``mean(e)``, the paper's form. Every violating pixel
-    contributes a constant-magnitude gradient, so a pixel over budget by 0.5 is
-    pushed back no harder than one over by 0.02 and isolated spikes survive.
-
-    ``"l2"`` returns ``||e||_2 = sqrt(sum(e**2))``. Each pixel's gradient now
-    scales with its own violation, so the worst offenders dominate. Note the
-    two are not on the same scale: the L2 form is roughly ``sqrt(N)`` times
-    larger than the L1 mean, so ``penalty_weight`` must be retuned when
+    ``"l1"`` returns the mean absolute difference (the paper's form).
+    ``"l2"`` returns the L2 norm of the difference; it is roughly ``sqrt(N)``
+    times larger than the L1 mean, so ``penalty_weight`` must be retuned when
     switching.
-    """
-    if norm not in ("l1", "l2"):
-        raise ValueError(f"Unsupported penalty norm: {norm!r}")
-    
-    if norm == "l1":
-        return torch.abs(adversarial_image - original_image).sum() / adversarial_image.numel()
 
-    return torch.sqrt(torch.square(adversarial_image - original_image).sum() + 1e-12)  # Adding this to prevent gradient exploding at zero
+    ``"none"`` disables the penalty (returns zero).
+    """
+    if norm not in ("l1", "l2", "none"):
+        raise ValueError(f"Unsupported penalty norm: {norm!r}")
+    if norm == "none":
+        return torch.zeros((), device=(adversarial_image if adversarial_image is not None else adversarial_latent_vector).device)
+    if latent_mode:
+        if adversarial_latent_vector is None or original_latent_vector is None:
+            raise ValueError(
+                "latent_mode requires adversarial_latent_vector and original_latent_vector."
+            )
+        adversarial, original = adversarial_latent_vector, original_latent_vector
+    else:
+        if adversarial_image is None or original_image is None:
+            raise ValueError("Pixel mode requires adversarial_image and original_image.")
+        adversarial, original = adversarial_image, original_image
+
+    difference = adversarial - original
+    if norm == "l1":
+        return torch.abs(difference).sum() / difference.numel()
+    return torch.sqrt(torch.square(difference).sum() + 1e-12)  # Adding this to prevent gradient exploding at zero
