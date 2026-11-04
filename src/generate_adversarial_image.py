@@ -87,11 +87,14 @@ def generate_adversarial_image(
     logger.info("Latent ready | shape=%s | dtype=%s", tuple(z.shape), z.dtype)
     optimizer = torch.optim.Adam([z], lr=learning_rate)
     original = (x.float() / 2 + 0.5).clamp(0, 1)
+    previous_distance = None
+    gamma = 1.0
 
     progress = tqdm(
         range(1, steps + 1), desc="Optimizing latent", unit="step",
         leave=False, dynamic_ncols=True, disable=None,
     )
+
     for step in progress:
         decoded = vae.decode(z.to(dtype=vae.dtype), return_dict=False)[0]  # pyright: ignore[reportArgumentType]
         # Algorithm 1 evaluates both loss terms on the raw decoder output; the
@@ -108,29 +111,49 @@ def generate_adversarial_image(
             )
         else:
             penalty = soft_penalty(adversarial, original, epsilon, norm=penalty_norm)
+
         loss = -classification_loss + penalty_weight * penalty
+
         if not torch.isfinite(loss).item():
             logger.error("Non-finite loss at step %d/%d", step, steps)
             raise FloatingPointError(f"Non-finite loss at step {step}/{steps}.")
+
+        cur_distance = (adversarial.detach() - original).abs().mean().item()
+        if previous_distance is not None:
+            if cur_distance > previous_distance:
+                gamma *= 0.9
+            elif cur_distance < previous_distance:
+                gamma *= 1.1
+        gamma = max(0.1, min(10.0, gamma))
+        previous_distance = cur_distance
+        for group in optimizer.param_groups:
+            group["lr"] = learning_rate * gamma
+
         if step == 1 or step % log_interval == 0 or step == steps:
             progress.set_postfix(
-                loss=f"{loss.item():.4f}", penalty=f"{penalty.item():.4f}"
+                loss=f"{loss.item():.4f}", penalty=f"{penalty.item():.4f}",
+                lr=f"{learning_rate * gamma:.6g}",
             )
             logger.info(
                 "Step %d/%d (pre-update) | loss=%.6f | eot_%s=%.6f | "
-                "penalty=%.6f | pixel_linf=%.6f | elapsed=%.1fs",
+                "penalty=%.6f | pixel_linf=%.6f | gamma=%.6f | lr=%.6g | elapsed=%.1fs",
                 step, steps, loss.item(), objective, classification_loss.item(),
                 penalty.item(),
                 (adversarial.detach() - original).abs().max().item(),
+                gamma, learning_rate * gamma,
                 time.perf_counter() - started,
             )
+
         optimizer.zero_grad()
         loss.backward()
+
         if z.grad is None or not torch.isfinite(z.grad).all().item():
             raise FloatingPointError(f"Missing or non-finite latent gradient at step {step}.")
         optimizer.step()
+
         if not torch.isfinite(z).all().item():
             raise FloatingPointError(f"Non-finite latent after step {step}.")
+
         if step % smoothing_interval == 0:
             with torch.no_grad():
                 delta = depthwise_smoothing(z - z_0, kernel_size, sigma)

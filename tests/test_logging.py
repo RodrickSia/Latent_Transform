@@ -262,6 +262,57 @@ class MarginLossTests(unittest.TestCase):
 
 
 class SingleImageTests(unittest.TestCase):
+    def test_distance_feedback_controls_adam_step_without_extra_latent_update(self):
+        adam = torch.optim.Adam
+        for distances, expected_rates in (
+            ([0.0, 0.2, 0.1, 0.1], [0.1, 0.09, 0.099, 0.099]),
+            ([index / 100 for index in range(32)],
+             [0.1 * max(0.1, 0.9 ** index) for index in range(32)]),
+            ([index / 100 for index in range(31, -1, -1)],
+             [0.1 * min(10.0, 1.1 ** index) for index in range(32)]),
+        ):
+            with self.subTest(distances=distances):
+                rates = []
+                updates = []
+                decoded_latents = []
+
+                class RecordingAdam(adam):
+                    def step(self, closure=None):
+                        rates.append(self.param_groups[0]["lr"])
+                        result = super().step(closure)
+                        updates.append(self.param_groups[0]["params"][0].detach().clone())
+                        return result
+
+                def decode(latent, return_dict=False):
+                    index = len(decoded_latents)
+                    decoded_latents.append(latent.detach().clone())
+                    distance = distances[min(index, len(distances) - 1)]
+                    output = nn.functional.interpolate(latent - latent.detach(), size=(32, 32))
+                    return (output + (2 * distance - 1),)
+
+                vae = TinyVAE()
+                with patch("generate_adversarial_image.torch.optim.Adam", RecordingAdam), patch.object(
+                    vae, "decode", side_effect=decode
+                ), patch(
+                    "generate_adversarial_image.eot_loss",
+                    side_effect=lambda image, *args: image.sum(),
+                ), patch(
+                    "generate_adversarial_image.soft_penalty", return_value=torch.tensor(0.0)
+                ):
+                    generate_adversarial_image(
+                        vae, nn.Identity(), Image.new("RGB", (32, 32)), 2,
+                        steps=len(distances), k=1, epsilon=8 / 255, penalty_weight=10,
+                        learning_rate=0.1, smoothing_interval=len(distances) + 1,
+                        kernel_size=3, sigma=0.5, width=32, height=32, crop_size=16,
+                        mean=cfg.IMAGENET_MEAN, std=cfg.IMAGENET_STD,
+                        log_interval=len(distances),
+                    )
+
+                for actual, expected in zip(rates, expected_rates, strict=True):
+                    self.assertAlmostEqual(actual, expected)
+                for decoded, updated in zip(decoded_latents[1:], updates, strict=True):
+                    torch.testing.assert_close(decoded, updated)
+
     def test_function_uses_passed_models_and_settings_without_saving(self):
         image = Image.new("RGB", (32, 32), (100, 150, 200))
         vae = TinyVAE()
