@@ -46,8 +46,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Margin confidence in logits; ignored unless --objective margin.",
     )
     parser.add_argument(
-        "--penalty-norm", choices=("l2", "l1", "none"), default=cfg.PENALTY_NORM,
-        help="Soft penalty: L2 (default), L1 (paper), or none (no penalty).",
+        "--penalty-norm", choices=("l2", "l1", "paper", "none"), default=cfg.PENALTY_NORM,
+        help="Soft penalty: L2 (default), L1, paper (mean ReLU of absolute difference "
+        "minus epsilon), or none (no penalty).",
     )
     parser.add_argument(
         "--latent-mode", action="store_true",

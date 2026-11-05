@@ -214,6 +214,47 @@ class EotTransformTests(unittest.TestCase):
         self.assertGreater(decoded.grad[2].item(), 0)
 
 
+class PaperPenaltyTests(unittest.TestCase):
+    def test_paper_penalty_threshold_and_gradients_in_pixel_and_latent_modes(self):
+        for latent_mode in (False, True):
+            with self.subTest(latent_mode=latent_mode):
+                adversarial = torch.tensor(
+                    [-0.5, -0.25, -0.125, 0.0, 0.125, 0.25, 0.75],
+                    requires_grad=True,
+                )
+                original = torch.zeros_like(adversarial)
+                if latent_mode:
+                    penalty = soft_penalty(
+                        epsilon=0.25, norm="paper", latent_mode=True,
+                        adversarial_latent_vector=adversarial,
+                        original_latent_vector=original,
+                    )
+                else:
+                    penalty = soft_penalty(adversarial, original, 0.25, norm="paper")
+                self.assertAlmostEqual(penalty.item(), 0.75 / 7)
+                penalty.backward()
+                torch.testing.assert_close(
+                    adversarial.grad,
+                    torch.tensor([-1 / 7, 0.0, 0.0, 0.0, 0.0, 0.0, 1 / 7]),
+                )
+
+    def test_paper_penalty_is_zero_within_budget(self):
+        adversarial = torch.tensor([-0.125, 0.0, 0.25], requires_grad=True)
+        penalty = soft_penalty(adversarial, torch.zeros_like(adversarial), 0.25, norm="paper")
+        self.assertEqual(penalty.item(), 0.0)
+        penalty.backward()
+        torch.testing.assert_close(adversarial.grad, torch.zeros_like(adversarial))
+
+    def test_cli_accepts_paper_penalty_and_keeps_existing_options(self):
+        for norm in ("paper", "l1", "l2", "none"):
+            with self.subTest(norm=norm):
+                args = main.parse_args([
+                    "--transfer-model", "resnet50", "--run-name", "penalty-test",
+                    "--penalty-norm", norm,
+                ])
+                self.assertEqual(args.penalty_norm, norm)
+
+
 class MarginLossTests(unittest.TestCase):
     def test_negated_cw_margin_is_maximized_and_capped_by_kappa(self):
         # Class 1 is correct and leads by 3 logits, so the margin is negative.

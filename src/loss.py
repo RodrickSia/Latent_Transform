@@ -81,14 +81,16 @@ def soft_penalty(
     With ``latent_mode=True`` it compares ``adversarial_latent_vector`` and
     ``original_latent_vector`` instead; the image arguments are ignored.
 
-    ``"l1"`` returns the mean absolute difference (the paper's form).
+    ``"paper"`` returns ``mean(relu(abs(adversarial - original) - epsilon))``.
+    It penalizes only differences exceeding the epsilon budget.
+    ``"l1"`` returns the mean absolute difference without an epsilon threshold.
     ``"l2"`` returns the L2 norm of the difference; it is roughly ``sqrt(N)``
     times larger than the L1 mean, so ``penalty_weight`` must be retuned when
     switching.
 
     ``"none"`` disables the penalty (returns zero).
     """
-    if norm not in ("l1", "l2", "none"):
+    if norm not in ("l1", "l2", "paper", "none"):
         raise ValueError(f"Unsupported penalty norm: {norm!r}")
     if norm == "none":
         return torch.zeros((), device=(adversarial_image if adversarial_image is not None else adversarial_latent_vector).device)
@@ -104,6 +106,8 @@ def soft_penalty(
         adversarial, original = adversarial_image, original_image
 
     difference = adversarial - original
+    if norm == "paper":
+        return nn.functional.relu(difference.abs() - epsilon).mean()
     if norm == "l1":
         return torch.abs(difference).sum() / difference.numel()
     return torch.sqrt(torch.square(difference).sum() + 1e-12)  # Adding this to prevent gradient exploding at zero
